@@ -6,7 +6,9 @@ import dns.resolver
 import paramiko
 import sqlite3
 from Crypto.PublicKey import RSA
-from fastapi import FastAPI, HTTPException
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives import serialization
+from fastapi import FastAPI, HTTPException, UploadFile, File
 app = FastAPI()
 
 
@@ -201,3 +203,92 @@ def create_auth_file(user_name: str, remote_host: str):
 
     # Return success message
     return {"message": "Public key added to remote user's authorized_keys file"}
+@app.post("/keys/create-temp-key")
+def generate_temp_keys(user_name: str, key_expiry: int):
+
+    # Connect to database
+    conn = sqlite3.connect('keys.db')
+    c = conn.cursor()
+
+    # Check if table exists, create it if it doesn't
+    c.execute('''CREATE TABLE IF NOT EXISTS temp_access
+                 (temp_access_id INTEGER PRIMARY KEY,
+                  user_name TEXT NOT NULL,
+                  key_expiry INT NOT NULL,
+                  key_id INT NOT NULL,
+                  FOREIGN KEY (key_id)
+                    REFERENCES keys (key_id)
+                 )''')
+
+    # Get the current max temp_access id and increment it for the new temp_access policy
+    c.execute('''SELECT MAX(temp_access_id) FROM temp_access''')
+    result = c.fetchone()
+    conn.commit()
+    conn.close()
+    if result[0]:
+        temp_access_id = result[0] + 1
+    else:
+        temp_access_id = 1
+    hostname = socket.gethostname()
+    #call generate-keys 
+    key_desc = "key temp"
+    gen_key_uri = "/keys/generate-keypair"   
+    #key_gen_data = "user_name={"+ user_name + "}&key_desc={" + urllib.parse.quote(key_desc) +"}"
+    key_gen_data = {"user_name" : user_name,"key_desc" : key_desc}
+    full_url = "http://127.0.0.1:8000" + gen_key_uri
+    #full_url = "http://"+ hostname + ":8000" + gen_key_uri + key_gen_data
+    result = requests(full_url,json=key_gen_data)
+    #print(result)
+    # Insert the keypair into the database
+    #c.execute("INSERT INTO keys (user_name, pub_key, priv_key, key_desc) VALUES (?, ?, ?, ?)", (user_name, pub_key, priv_key, key_desc))
+    #keyid = c.lastrowid
+
+    #return {"keyid": keyid, "user_name": user_name, "pub_key": pub_key, "priv_key": priv_key, "key_desc": key_desc}
+    return {"1": result}
+
+
+@app.post("/keys/add-private-key-from-file", summary="Add a private key from a file", tags=["Routes"])
+async def add_private_key_from_file(user_name: str, key_desc: str, file: UploadFile = File(...)):
+    try:
+        contents = await file.read()
+        priv_key = contents.decode('utf-8')
+
+        if 'BEGIN RSA PRIVATE KEY' in priv_key:
+            key = RSA.import_key(priv_key)
+            pub_key = key.publickey().export_key().decode('utf-8')
+        elif 'BEGIN OPENSSH PRIVATE KEY' in priv_key:
+            key = serialization.load_ssh_private_key(contents, password=None)
+            if isinstance(key, Ed25519PrivateKey):
+                pub_key = key.public_key().public_bytes(
+                    encoding=serialization.Encoding.OpenSSH,
+                    format=serialization.PublicFormat.OpenSSH
+                ).decode('utf-8')
+            else:
+                raise ValueError("Unsupported key format")
+        else:
+            raise ValueError("Unsupported key format")
+        conn = sqlite3.connect('keys.db')
+        c = conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS keys
+                     (id INTEGER PRIMARY KEY,
+                      user_name TEXT NOT NULL,
+                      priv_key TEXT NOT NULL,
+                      pub_key TEXT NOT NULL,
+                      key_desc TEXT NOT NULL)''')
+        c.execute('''SELECT MAX(id) FROM keys''')
+        result = c.fetchone()
+        if result[0]:
+            key_id = result[0] + 1
+        else:
+            key_id = 1
+        c.execute("INSERT INTO keys (user_name, pub_key, priv_key, key_desc) VALUES (?, ?, ?, ?)", (user_name, pub_key, priv_key, key_desc))
+        keyid = c.lastrowid
+        conn.commit()
+        conn.close()
+        return {"keyid": keyid, "user_name": user_name, "pub_key": pub_key, "priv_key": priv_key, "key_desc": key_desc}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+#@app.post("/keys/key-removal")
+#@app.post("/keys/create-schedule")
