@@ -13,16 +13,16 @@ app = FastAPI()
 
 
 
-@app.get("/", tags=["Routes"])
+@app.get("/", tags=["Default"])
 def read_root():
     return {"Homelab API Server"}
-@app.post("/get-node-ip", summary="Get IP from hostname", tags=["Routes"])
+@app.post("/get-node-ip", summary="Get IP from hostname", tags=["Docker"])
 def query(hostname: str, nameservers: str = "192.168.1.175") -> str:
     resolver = dns.resolver.Resolver(configure=False)
     resolver.nameservers = [nameservers]
     answers = resolver.query(hostname, "A")
     return str(answers[0])
-@app.get("/docker/ps", summary="Query running Docker containers", tags=["Routes"])
+@app.get("/docker/ps", summary="Query running Docker containers", tags=["Docker"])
 async def docker_ps():
     # Set up the SSH client and connect to the remote server
     ssh = paramiko.SSHClient()
@@ -36,7 +36,7 @@ async def docker_ps():
     # Close the SSH connection and return the output
     ssh.close()
     return {"status": output}
-@app.post("/docker/restart", summary="Restarts a Docker container", tags=["Routes"])
+@app.post("/docker/restart", summary="Restarts a Docker container", tags=["Docker"])
 async def docker_restart(container: str):
     # Set up the SSH client and connect to the remote server
     ssh = paramiko.SSHClient()
@@ -53,7 +53,7 @@ async def docker_restart(container: str):
     # Close the SSH connection and return the output
     ssh.close()
     return {"status": status}
-@app.post("/keys/generate-keypair", summary="Generates an RSA SSH keypair", tags=["Routes"])
+@app.post("/keys/generate-keypair", summary="Generates an RSA SSH keypair", tags=["SSH"])
 def generate_keys(user_name: str, key_desc: str):
     # Generate RSA keypair
     key = RSA.generate(2048)
@@ -92,7 +92,7 @@ def generate_keys(user_name: str, key_desc: str):
     return {"keyid": keyid, "user_name": user_name, "pub_key": pub_key, "priv_key": priv_key, "key_desc": key_desc}
 
 
-@app.get("/keys/{key_id}", summary="Queries the database based on known keyid", tags=["Routes"])
+@app.get("/keys/{key_id}", summary="Queries the database based on known keyid", tags=["SSH"])
 async def get_key(key_id: int):
     db = sqlite3.connect("keys.db")
     c = db.cursor()
@@ -105,7 +105,7 @@ async def get_key(key_id: int):
         return {"message": "Key not found"}
 
 
-@app.get("/keys/user/{user_name}", summary="Queries the database based on known username", tags=["Routes"])
+@app.get("/keys/user/{user_name}", summary="Queries the database based on known username", tags=["SSH"])
 def get_keys_by_user_name(user_name: str):
     conn = sqlite3.connect("keys.db")
     c = conn.cursor()
@@ -113,7 +113,7 @@ def get_keys_by_user_name(user_name: str):
     keys = c.fetchone()
     if keys is None:
         return {"error": "User not found"}
-    key_id, db_user_name, pub_key, priv_key = keys
+    key_id, db_user_name, priv_key, pub_key, key_desc = keys
     return {
         "key_id": key_id,
         "user_name": db_user_name,
@@ -122,7 +122,7 @@ def get_keys_by_user_name(user_name: str):
         "key_desc": key_desc,
     }
 
-@app.get("/keys/{key_id}/write-private-key", summary="Writes the private key to a file", tags=["Routes"])
+@app.get("/keys/{key_id}/write-private-key", summary="Writes the private key to a file", tags=["SSH"])
 def write_private_key_to_file(key_id: int, user_name: str):
     # Connect to the local keys database called keys.db
     conn = sqlite3.connect("keys.db")
@@ -147,7 +147,7 @@ def write_private_key_to_file(key_id: int, user_name: str):
 
     return {"message": f"Private key for {user_name} with id {key_id} written to file {file_name}"}
 
-@app.get("/keys/{key_id}/write-public-key", summary="Writes the public key to a file", tags=["Routes"])
+@app.get("/keys/{key_id}/write-public-key", summary="Writes the public key to a file", tags=["SSH"])
 def write_public_key_to_file(key_id: int, user_name: str):
     # Connect to the local keys database called keys.db
     conn = sqlite3.connect("keys.db")
@@ -171,7 +171,7 @@ def write_public_key_to_file(key_id: int, user_name: str):
         f.write(pub_key)
 
     return {"message": f"Public key for {user_name} with id {key_id} written to file {file_name}"}
-@app.post("/keys/create-auth-file")
+@app.post("/keys/create-auth-file", tags=["SSH"])
 def create_auth_file(user_name: str, remote_host: str):
     # Connect to the local keys database called keys.db
     conn = sqlite3.connect("keys.db")
@@ -203,9 +203,8 @@ def create_auth_file(user_name: str, remote_host: str):
 
     # Return success message
     return {"message": "Public key added to remote user's authorized_keys file"}
-@app.post("/keys/create-temp-key")
+@app.post("/keys/create-temp-key", tags=["SSH"])
 def generate_temp_keys(user_name: str, key_expiry: int):
-
     # Connect to database
     conn = sqlite3.connect('keys.db')
     c = conn.cursor()
@@ -223,31 +222,33 @@ def generate_temp_keys(user_name: str, key_expiry: int):
     # Get the current max temp_access id and increment it for the new temp_access policy
     c.execute('''SELECT MAX(temp_access_id) FROM temp_access''')
     result = c.fetchone()
-    conn.commit()
-    conn.close()
     if result[0]:
         temp_access_id = result[0] + 1
     else:
         temp_access_id = 1
-    hostname = socket.gethostname()
-    #call generate-keys 
-    key_desc = "key temp"
-    gen_key_uri = "/keys/generate-keypair"   
-    #key_gen_data = "user_name={"+ user_name + "}&key_desc={" + urllib.parse.quote(key_desc) +"}"
-    key_gen_data = {"user_name" : user_name,"key_desc" : key_desc}
-    full_url = "http://127.0.0.1:8000" + gen_key_uri
-    #full_url = "http://"+ hostname + ":8000" + gen_key_uri + key_gen_data
-    result = requests(full_url,json=key_gen_data)
-    #print(result)
-    # Insert the keypair into the database
-    #c.execute("INSERT INTO keys (user_name, pub_key, priv_key, key_desc) VALUES (?, ?, ?, ?)", (user_name, pub_key, priv_key, key_desc))
-    #keyid = c.lastrowid
 
-    #return {"keyid": keyid, "user_name": user_name, "pub_key": pub_key, "priv_key": priv_key, "key_desc": key_desc}
-    return {"1": result}
+    # Generate keypair using the generate-keypair endpoint
+    key_desc = "Temporary Key"
+    gen_key_uri = "/keys/generate-keypair"
+    full_url = f"http://127.0.0.1:8000{gen_key_uri}"
+    key_gen_data = {"user_name": user_name, "key_desc": key_desc}
+    response = requests.post(full_url, json=key_gen_data)
 
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code, detail="Failed to generate keys")
 
-@app.post("/keys/add-private-key-from-file", summary="Add a private key from a file", tags=["Routes"])
+    key_data = response.json()
+    key_id = key_data.get("keyid")
+
+    # Insert the temporary access policy into the database
+    c.execute("INSERT INTO temp_access (user_name, key_expiry, key_id) VALUES (?, ?, ?)", 
+              (user_name, key_expiry, key_id))
+    conn.commit()
+    conn.close()
+
+    return {"temp_access_id": temp_access_id, "user_name": user_name, "key_id": key_id, "key_expiry": key_expiry}
+
+@app.post("/keys/add-private-key-from-file", summary="Add a private key from a file", tags=["SSH"])
 async def add_private_key_from_file(user_name: str, key_desc: str, file: UploadFile = File(...)):
     try:
         contents = await file.read()
